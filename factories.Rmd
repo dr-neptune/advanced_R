@@ -1,0 +1,760 @@
+---
+title: "Function Factories"
+author: "Michael Rose"
+output: 
+  html_document:
+     highlight: zenburn
+     theme: lumen
+     df_print: paged
+     fig_align: center
+     code_folding: hide
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, out.width = "100%", out.height = "110%")
+
+library(tidyverse)
+library(magrittr)
+```
+
+# {.tabset}
+
+## 10.1 | Introduction 
+
+A **function factory** is a function that makes functions. 
+
+```{r}
+power1 <- function(exp) {
+    function(x) {
+        x ^ exp
+    }
+}
+
+square <- power1(2)
+cube <- power1(3)
+
+square(4)
+cube(5)
+
+cube(5) %>% square()
+```
+
+Of the three main functional programming tools, (functionals, function factories, and function operators), function factories are the least used. Generally they don't reduce overall code complexity, but instead partition complexity into more easily digested chunks. They are also building blocks for the useful function operators.
+
+```{r}
+library(rlang)
+library(ggplot2)
+library(scales)
+```
+
+# 10.2 | Factory Fundamentals 
+
+The key idea that makes function factories work can be expressed very concisely: 
+
+> The enclosing environment of the manufactured function is an execution environment of the function factory. 
+
+## 10.2.1 | Environments 
+
+```{r}
+square
+
+env_print(square)
+
+cube
+env_print(cube)
+```
+
+env_print shows us that both environments have a binding to exp, but if we want to see its value we must first get the environment of the function and then extract the values 
+
+```{r}
+fn_env(square)$exp
+
+fn_env(cube)$exp
+```
+
+We can summarize the way that these relationships work with two conventions:
+
+1. Any free floating symbol lives in the global environment
+2. Any environment without an explicit parent inherits from the global environment
+
+## 10.2.3 | Forcing Evaluation
+
+There is a subtle bug in power1() caused by lazy evaluation. 
+
+```{r}
+# introduce some indirection to see
+x <- 2
+square <- power1(x)
+x <- 3
+```
+
+```{r}
+square(2)
+```
+
+While we want it to be 4, it is 8 because square is only evaluated when it is ran, not when power1() is ran. 
+
+This problem will arise whenever a binding changes in between calling the factory function and calling the manufractured function. 
+
+We can fix this problem by forcing evaluation with force(): 
+
+```{r}
+power2 <- function(exp) {
+    force(exp)
+    function(x) {
+        x ^ exp
+    }
+}
+
+x <- 2
+square <- power2(x)
+x <- 3
+
+square(2)
+```
+
+Whenevr a function factory is created, make sure every argument is evaluated using force() as necessary if the argument is only used by the manufactured function. 
+
+Function factories allow us to maintain state across function invocations, which is generally hard to do. 
+
+There are two things that make this possible:
+
+1. The enclosing environment of the manufactured function is unique and constant 
+2. R has a special assignment operator, <<- which modifies the bindings in the enclosing environment
+
+The usual assignment operator, <-, always creates a binding in the local environment.
+The super assignment operator, <<-, rebinds an existing name in a parent environment.
+
+```{r}
+# create a function that records how many times its been called
+new_counter <- function() {
+    i <- 0
+
+    function() {
+        i <<- i + 1
+        i
+    }
+}
+
+counter_one <- new_counter()
+counter_two <- new_counter()
+```
+
+When the manufactured function is run, i <<- i + 1 will modify i in its enclosing environment. 
+
+```{r}
+counter_one()
+counter_one()
+
+counter_two()
+
+counter_one()
+counter_two()
+```
+
+Stateful functions are best used in moderation. When your function starts managing the state of multiple variables, its better to switch to R6.
+
+## 10.2.5 | Garbage Collection
+
+Since manufactured functions hold onto the execution environment, we need to explicitly unbind any large temporary objects with rm().
+
+```{r}
+# compare sizes
+f1 <- function(n) {
+    x <- runif(n)
+    m <- mean(x)
+    function () m
+}
+
+g1 <- f1(1e6)
+
+lobstr::obj_size(g1)
+
+f2 <- function(n) {
+    x <- runif(n)
+    m <- mean(x)
+    rm(x)
+    function() m
+}
+
+g2 <- f2(1e6)
+
+lobstr::obj_size(g2)
+
+```
+
+## 10.2.6 | Exercises 
+
+2. Base R contains two function factories, approxfun() and ecdf(). Read their documentation and experiment to figure out what the functions do and what they return.
+
+#### approxfun
+
+approxfun either 
+
+1. Returns a list of points which linearly interpolate given data points, or 
+2. Returns a function performing the linear (or constant) interpolation
+
+Example:
+
+```{r}
+require(graphics)
+
+x <- 1:10
+y <- rnorm(10)
+par(mfrow = c(2,1))
+plot(x, y, main = "approx(.) and approxfun(.)")
+points(approx(x, y), col = 2, pch = "*")
+points(approx(x, y, method = "constant"), col = 4, pch = "*")
+
+f <- approxfun(x, y)
+curve(f(x), 0, 11, col = "green2")
+points(x, y)
+is.function(fc <- approxfun(x, y, method = "const")) # TRUE
+curve(fc(x), 0, 10, col = "darkblue", add = TRUE)
+## different extrapolation on left and right side :
+plot(approxfun(x, y, rule = 2:1), 0, 11, col = "tomato",
+     add = TRUE, lty = 3, lwd = 2)
+
+## Show treatment of 'ties' :
+x <- c(2,2:4,4,4,5,5,7,7,7)
+y <- c(1:6, 5:4, 3:1)
+
+(amy <- approx(x, y, xout = x)$y) # warning, can be avoided by specifying 'ties=':
+op <- options(warn=2) # warnings would be error
+stopifnot(identical(amy, approx(x, y, xout = x, ties=mean)$y))
+options(op) # revert
+(ay  <- approx(x, y, xout = x, ties = "ordered")$y)
+stopifnot(amy == c(1.5,1.5, 3, 5,5,5, 4.5,4.5, 2,2,2),
+ay  == c(2, 2,    3, 6,6,6, 4, 4,    1,1,1))
+approx(x, y, xout = x, ties = min)$y
+approx(x, y, xout = x, ties = max)$y
+```
+
+ecdf
+
+ecdf() returns the empirical cumulative distribution function. 
+
+Examples:
+
+```{r}
+##-- Simple didactical  ecdf  example :
+x <- rnorm(12)
+Fn <- ecdf(x)
+Fn     # a *function*
+Fn(x)  # returns the percentiles for x
+tt <- seq(-2, 2, by = 0.1)
+12 * Fn(tt) # Fn is a 'simple' function {with values k/12}
+summary(Fn)
+##--> see below for graphics
+knots(Fn)  # the unique data values {12 of them if there were no ties}
+
+y <- round(rnorm(12), 1); y[3] <- y[1]
+Fn12 <- ecdf(y)
+Fn12
+knots(Fn12) # unique values (always less than 12!)
+summary(Fn12)
+summary.stepfun(Fn12)
+
+## Advanced: What's inside the function closure?
+ls(environment(Fn12))
+##[1] "f"  "method"  "n"  "x"  "y"  "yleft"  "yright"
+utils::ls.str(environment(Fn12))
+stopifnot(all.equal(quantile(Fn12), quantile(y)))
+
+###----------------- Plotting --------------------------
+require(graphics)
+
+op <- par(mfrow = c(3, 1), mgp = c(1.5, 0.8, 0), mar =  .1+c(3,3,2,1))
+F10 <- ecdf(rnorm(10))
+summary(F10)
+
+plot(F10)
+plot(F10, verticals = TRUE, do.points = FALSE)
+
+plot(Fn12 , lwd = 2) ; mtext("lwd = 2", adj = 1)
+xx <- unique(sort(c(seq(-3, 2, length = 201), knots(Fn12))))
+lines(xx, Fn12(xx), col = "blue")
+abline(v = knots(Fn12), lty = 2, col = "gray70")
+
+plot(xx, Fn12(xx), type = "o", cex = .1)  #- plot.default {ugly}
+plot(Fn12, col.hor = "red", add =  TRUE)  #- plot method
+abline(v = knots(Fn12), lty = 2, col = "gray70")
+## luxury plot
+plot(Fn12, verticals = TRUE, col.points = "blue",
+col.hor = "red", col.vert = "bisque")
+
+##-- this works too (automatic call to  ecdf(.)):
+plot.ecdf(rnorm(24))
+title("via  simple  plot.ecdf(x)", adj = 1)
+par(op)
+```
+
+3. Create a function pick() that takes an index, i, as an argument and returns a function with an argument x that subsets x with i.
+
+pick(1)(x) should be equivalent to x[[1]]
+
+```{r}
+pick <- function(num) {
+    function(x) {x[[num]]}
+}
+
+
+x <- c(1, 2, 3, 4, 5)
+y <- runif(min = 0, max = 1, n = 10)
+
+x %>% pick_first()
+
+pick_first <- pick(1)
+pick_second <- pick(2)
+pick_fifth <- pick(5)
+
+pick_first(x)
+pick_second(x)
+pick_fifth(x)
+
+pick(1)(y)
+pick(8)(y)
+
+lapply(mtcars, pick(5))
+lapply(mtcars, function(x) x[[5]])
+```
+
+4. Create a function that creates functions that compute the ith central moment of a numeric vector. 
+
+You can test it by running the following code:
+
+```{r}
+m1 <- moment(1)
+m2 <- moment(2)
+
+x <- runif(100)
+stopifnot(all.equal(m1(x), 0))
+stopifnot(all.equal(m2(x), var(x) * 99 / 100))
+```
+
+```{r}
+moment <- function(m) {
+    function(x) {
+        norm <- (1 / length(x))
+        x_m <- mean(x)
+        x %>% map_dbl(., ~ (.x - x_m)^m) %>% sum() * norm 
+    }
+}
+
+x <- rnorm(n = 10000, mean = 0, sd = 1)
+
+x %>% m1()
+x %>% m2()
+```
+
+5. What happens if you don't use a closure? 
+
+```{r}
+i <- 0
+new_counter2 <- function() {
+    i <<- i + 1
+    i
+}
+
+output <- new_counter2()
+
+output
+```
+
+It doesn't carry onward, as the example with 
+
+```{r}
+new_counter <- function() {
+    i <- 0
+
+    function() {
+        i <<- i + 1
+        i
+    }
+}
+```
+
+did.
+
+# 10.3 | Graphical Factories 
+
+## 10.3.1 | Labelling 
+
+One of the advantages of the scales package is that it makes it easy to customize labels on ggplot. The formatter functions are useful for controlling the appearance of axis breaks.
+
+```{r}
+library(scales)
+y <- c(12345, 123456, 1234567)
+
+comma_format()(y)
+
+number_format(scale = 1e-3, suffix = " K")(y)
+```
+
+The primary interface is a function factory. This enables nice integration with ggplot2 scales since they accept functions in the label argument. 
+
+```{r}
+df <- data.frame(x = 1, y = y)
+
+ggplot(df, aes(x, y)) +
+    geom_point() +
+    scale_x_continuous(breaks = 1, labels = NULL) +
+    labs(x = NULL, y = NULL) -> core
+
+
+core
+
+core + scale_y_continuous(labels = comma_format()) -> c1
+
+core + scale_y_continuous(labels = number_format(scale = 1e-3, suffix = " K")) -> c2
+
+core + scale_y_continuous(labels = scientific_format()) -> c3
+
+cowplot::plot_grid(core, c1, c2, c3, ncol = 4)
+```
+
+## 10.3.2 | Histogram Bins 
+
+A little known feature of geom_histogram is that binwidth can be a function. this is useful because the function is executed once for each group - meaning we can have different binwidths for different facets. 
+
+```{r}
+# example where fixed binwidth isn't good
+sd <- c(1, 5, 15)
+n <- 100
+
+df <- data.frame(x = rnorm(3 * n, sd = sd),
+                 sd = rep(sd, n))
+
+df %>% ggplot(aes(x)) +
+    geom_histogram(binwidth = 2) +
+    facet_wrap(~ sd, scales = "free_x") +
+    labs(x = NULL)
+```
+
+It would be nice if we could request that the binwidths vary so we get approximately the same number of observations in each bin. One way to do this is with a function factory which inputs the desired number of bins (n) and outputs a function that takes a numeric vector and returns a binwidth. 
+
+```{r}
+binwidth_bins <- function(n) {
+    force(n)
+
+    function(x) {
+        (max(x) - min(x)) / n
+    }
+}
+
+df %>% ggplot(aes(x)) +
+    geom_histogram(binwidth = binwidth_bins(20)) +
+    facet_wrap(~ sd, scales = "free_x") +
+    labs(x = NULL)
+```
+
+We could use this pattern to wrap around the base R functions that automatically find the so called optimal binwidth, nclass.Sturges(), nclass.scott() and nclass.FD()
+
+```{r}
+base_bins <- function(type) {
+    fun <- switch(type,
+                  Sturges = nclass.Sturges,
+                  scott = nclass.scott,
+                  FD = nclass.FD,
+                  stop("unknown type", call. = FALSE))
+
+    function(x) {
+        (max(x) - min(x)) / fun(x)
+    }
+}
+
+df %>% ggplot(aes(x)) +
+    geom_histogram(binwidth = base_bins("FD")) +
+    facet_wrap(~ sd, scales = "free_x") +
+    labs(x = NULL)
+
+c("Sturges", "scott", "FD") %>% map(.,
+                                    ~ df %>% ggplot(aes(x)) +
+                                        geom_histogram(binwidth = base_bins(.x)) +
+                                        facet_wrap(~ sd, scales = "free_x") +
+                                        labs(x = NULL)) %>%
+    cowplot::plot_grid(., ncol = 1)
+```
+
+# 10.4 | Statistical Factories 
+
+More motivating examples for function factories come from statistics: 
+
+- the Box-Cox transformation 
+- bootstrap resampling 
+- maximum likelihood estimation 
+
+These can all be done without function factories, but FFs provide elegant solutions.
+
+## 10.4.1 | Box-Cox Transformation
+
+The Box-Cox transformation (a type of power transformation) is often used to transform data towards normality. It's single parameter, lambda, controls the strength of the transformation. 
+
+
+```{r}
+# express the transformation as a two argument function
+boxcox1 <- function(x, lambda) {
+    stopifnot(length(lambda) == 1)
+
+    if (lambda == 0) {
+        log(x)
+    } else {
+        (x ^ lambda - 1) / lambda
+    }
+}
+```
+
+Reformulating it as a function factory makes it easy to explore its behavior with stat_function()
+
+```{r}
+boxcox2 <- function(lambda) {
+    if (lambda == 0) {
+        function(x) log(x)
+    } else {
+        function(x) (x ^ lambda - 1) / lambda
+    }
+}
+
+stat_boxcox <- function(lambda) {
+    stat_function(aes(color = lambda), fun = boxcox2(lambda), size = 1)
+}
+
+ggplot(data.frame(x = c(0, 5)), aes(x)) +
+    map(c(0.5, 1, 1.5), ~ stat_boxcox(.x)) +
+    scale_colour_viridis_c(limits = c(0, 1.5)) -> c1
+```
+
+Visually, log() does seem to make sense as the transformation from Lambda = 0; 
+as values get smaller, the function gets closed and closer to a log transform: 
+
+```{r}
+ggplot(data.frame(x = c(0.01, 1)), aes(x)) +
+    map(c(0.5, 0.25, 0.1, 0), ~ stat_boxcox(.x)) +
+    scale_color_viridis_c(limits = c(0, 1.5)) -> c2
+```
+
+```{r}
+cowplot::plot_grid(c1, c2, ncol = 1)
+```
+
+In general, this allows us to use a Box-Cox transformation with any function that accepts a unary transformation function.
+
+Side note: stat_function
+
+stat_function makes it easy to superimpose a function on top of an existing plot. The function is called with a grid of evenly spaced values along the x axis, and the results are drawn with a line. 
+
+Example: 
+
+```{r}
+# basic example 
+set.seed(8888)
+
+df <- data.frame(
+    x = rnorm(100)
+)
+
+base <- ggplot(df, aes(x)) + geom_density()
+
+base + stat_function(fun = dnorm, color = "red")
+
+base + stat_function(fun = dnorm, color = "red", args = list(mean = 3))
+
+# plot functions without data
+data.frame(x = c(0, 2)) %>% ggplot(aes(x)) +
+    stat_function(fun = exp, geom = "line")
+
+# plot a normal curve
+data.frame(x = c(-5, 5)) %>% ggplot(aes(x)) +
+    stat_function(fun = dnorm)
+
+# to specify a different mean or sd, use the args parameter to supply new values
+data.frame(x = c(-5, 5)) %>% ggplot(aes(x)) +
+    stat_function(fun = dnorm, args = list(mean = 2, sd = 0.5))
+
+# two functions on the same plot
+f <- data.frame(x = c(0, 10)) %>% ggplot(aes(x))
+f + stat_function(fun = sin, color = "red") +
+    stat_function(fun = cos, color = "blue")
+
+# using a custom function
+test <- function(x) {
+    x^2 + x + 20
+}
+
+f + stat_function(fun = test)
+```
+
+## 10.4.2 | Bootstrap Generators 
+
+Function factories are a useful approach for bootstrapping. We can think about a bootstrap generator, a function that yields a fresh bootstrap every time it is called 
+
+```{r}
+boot_permute <- function(df, var) {
+    n <- nrow(df)
+    force(var)
+
+    function() {
+        col <- df[[var]]
+        col[sample(n, replace = TRUE)]
+    }
+}
+
+boot_mtcars1 <- boot_permute(mtcars, "mpg")
+
+boot_mtcars1()
+```
+
+This makes more sense with a parametric bootstrap where we first fit a model. We can do this setup step once, when the factory is called, rather than once every time we generate the bootstrap. 
+
+```{r}
+boot_model <- function(df, formula) {
+    mod <- lm(formula, data = df)
+    fitted <- unname(fitted(mod))
+    resid <- unname(resid(mod))
+    rm(mod)
+
+    function() {
+        fitted + sample(resid)
+    }
+}
+
+boot_mtcars2 <- boot_model(mtcars, mpg ~ wt)
+
+boot_mtcars2()
+```
+
+## 10.4.3 | Maximum Likelihood Estimation
+
+Suppose we wish to perform MLE on the Poisson probability function. Then, taking the log likelihood we get something akin to 
+
+$\log(P(\lambda, x)) = \log(\lambda)\sum\limits_{i=1}^n x_i - n \lambda - \sum\limits_{i=1}^n \log(x_1 !)$
+
+which we can turn into an R function. 
+
+```{r}
+lprob_poisson <- function(lambda, x) {
+    n <- length(x)
+    (log(lambda) * sum(x)) - (n * lambda) - sum(lfactorial(x))
+}
+
+x1 <- c(41, 30, 31, 38, 29, 24, 30, 29, 31, 38)
+
+# compute the logged probability of x1 for different values of lambda
+lprob_poisson(10, x1)
+lprob_poisson(20, x1)
+lprob_poisson(30, x1)
+```
+
+Given x, what value of lambda gives us the highest value of lprob_poisson? 
+
+```{r}
+ll_poisson1 <- function(x) {
+    n <- length(x)
+
+    function(lambda) {
+        log(lambda) * sum(x) - n * lambda - sum(lfactorial(x))
+    }
+}
+```
+
+One nice thing about this approach is that we can do some precomputation. Any term that involves x can be computed once in the factory. This is useful because we must call thing function many times to compute lambda. 
+
+```{r}
+ll_poisson2 <- function(x) {
+    n <- length(x)
+    sum_x <- sum(x)
+    c <- sum(lfactorial(x))
+
+    function(lambda) {
+        log(lambda) * sum_x - n * lambda - c
+    }
+}
+
+# use this to find the value of lambda which maximizes the log likelihood
+ll1 <- ll_poisson2(x1)
+
+ll1(30)
+```
+
+Rather than trial and error we can automate the process of finding the best value wtih optimize().
+
+```{r}
+optimize(ll1, c(0, 100), maximum = TRUE)
+```
+
+We could have solved this problem without using a function factory because optimize passes ... onto the function being optimized. This means we can use the log probability function directly.
+
+```{r}
+optimize(lprob_poisson, c(0, 100), x = x1, maximum = TRUE)
+```
+
+The advantage of using a function factory here is small, but there are two niceties: 
+
+- We can precompute some values in the factory, saving computation in each iteration 
+- The two level design better reflects the mathematical structure of the underlying problem
+
+
+## 10.5 | Function Factories + Functionals 
+
+This section looks at combining functionals and function factories to turn data into many functions. 
+
+```{r}
+# create many specially named power functions
+names <- list(
+    square = 2,
+    cube = 3,
+    root = 1/2,
+    cuberoot = 1/3,
+    reciprocal = -1
+)
+
+funs <- map(names, power1)
+
+funs$cuberoot(64)
+funs$reciprocal(64)
+```
+
+One downside of the current constructuion is that we have to prefix every function with funs$ . 
+
+For a temporary effect, we can use with()
+
+```{r}
+with(funs, root(100))
+```
+
+For a longer effect we can attach() the functions to a search path, then detach() when done
+
+```{r}
+attach(funs)
+
+root(100)
+reciprocal(100)
+root(100)
+
+detach(funs)
+
+## root(100)
+## reciprocal(100)
+## root(100)
+```
+
+We can also copy the functions to the global environment with env_bind(). This is mostly permanent (!!! is in section 19.6)
+
+```{r}
+rlang::env_bind(globalenv(), !!!funs)
+
+root(100)
+reciprocal(100)
+root(100)
+```
+
+We can later unbind those same names, but there is no guarantee that they haven't been rebound in the meantime, and we may be deleting an object that someone else created.
+
+```{r}
+rlang::env_unbind(globalenv(), names(funs))
+
+## root(100)
+## reciprocal(100)
+## root(100)
+```
+

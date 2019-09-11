@@ -1,0 +1,950 @@
+---
+title: "Functional Programming"
+author: "Michael Rose"
+output: 
+  html_document:
+     highlight: zenburn
+     theme: lumen
+     df_print: paged
+     fig_align: center
+     code_folding: hide
+---
+
+```{r, echo = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, out.width = "100%", out.height = "110%")
+
+library(tidyverse)
+library(magrittr)
+```
+
+# {.tabset}
+
+## Functionals 
+
+A **functional** is a function that takes a function as an input and returns a vector as output. 
+
+```{r}
+randomize <- function(f) {
+    f(runif(1e3))
+}
+
+randomize(mean)
+
+randomize(sum)
+```
+
+This focuses on the purrr package 
+
+```{r}
+library(purrr)
+```
+
+map takes a vector and a function, calls the function once fore ach element of the vector and returns the results in a list. 
+
+```{r}
+triple <- function(x) x * 3
+
+map(1:3, triple)
+```
+
+The heart of the map function is simple:
+
+```{r}
+simple_map <- function(x, f, ...) {
+    out <- vector("list", length(x))
+
+    for (i in seq_along(x)) {
+        out[[i]] <- f(x[[i]], ...)
+    }
+    out
+}
+
+simple_map(1:3, triple)
+```
+
+The real purrr has a few more features: 
+
+- it is written in C 
+- it preserves names 
+- supports shortcuts 
+
+We can also enforce type safety with specific variants of map: 
+
+
+- map_chr 
+- map_int 
+- map_dbl 
+- map_lgl 
+
+Instead of using map with an existing function, we can also use lambdas 
+
+```{r}
+map_dbl(mtcars, ~ length(unique(.x)))
+```
+
+The shortcut above works because all purrr functions translate formulas created by twiddle ~ into functions. We can see what's happening behind the scenes with as_mapper()
+
+```{r}
+as_mapper(~ length(unique(.x)))
+```
+
+This shortcut is particularly useful for generating random data 
+
+```{r}
+x <- map(1:3, ~ runif(2))
+str(x)
+```
+
+The map functions also have shortcuts for extracting elements from a vector, powered by purrr:pluck(). 
+
+We can use a character vector to select elements by names, an int vector to select by position, or a list to select by both name and position. This is useful for dealing with nested lists or JSON
+
+```{r}
+x <- list(
+    list(-1, x = 1, y = c(2), z = "a"),
+    list(-2, x = 4, y = c(5, 6), z = "b"),
+    list(-3, x = 8, y = c(9, 10, 11))
+)
+
+x
+
+# select by name 
+map_dbl(x, "x")
+
+# or by position
+map_dbl(x, 1)
+
+# or by both
+map_dbl(x, list("y", 1))
+
+# error is a component doesn't exist
+# map_chr(x, "z")
+
+# unless supplied with a default value
+map_chr(x, "z", .default = NA)
+```
+
+### 9.2.3 | Passing Arguments with ... 
+
+We can pass along arguments with an anonymous function 
+
+```{r}
+x <- list(1:5, c(1:10, NA))
+
+map_dbl(x, ~ mean(.x, na.rm = TRUE))
+```
+
+Since map functions pass ... along, there is a simpler form available 
+
+```{r}
+map_dbl(x, mean, na.rm = TRUE)
+```
+
+It is important to note that these arguments are not decomposed, map() is only vectorized over its first argument. If an arg after f is a vector, it is passed as is. 
+
+There is a subtle difference between placing extra arguments inside an anonymous function compared with passing them to map. Putting them in a lambda means they will be evaluated every time f is executed, not just once when calling map. This is easiest to see if we make the additional argument random
+
+```{r}
+plus <- function(x, y) x + y
+
+x <- c(0, 0, 0, 0)
+
+map_dbl(x, plus, runif(1))
+
+map_dbl(x, ~ plus(.x, runif(1)))
+```
+
+## 9.2.5 | Varying Another Argument 
+
+Suppose we wish to vary some arbitrary argument. 
+
+```{r}
+trims <- c(0, 0.1, 0.2, 0.5)
+
+x <- rcauchy(1000)
+```
+
+The simplest technique is to use a lambda function to rearrange the argument order:
+
+```{r}
+map_dbl(trims, ~ mean(x, trim = .x))
+
+map_dbl(trims, function(trim) mean(x, trim = trim))
+```
+
+## 9.2.6 | Exercises
+
+3. Use the appropriate map function to 
+
+a. compute the standard deviation of every column in a numeric data frame:
+
+```{r}
+mtcars %>% map_dfc(sd)
+
+# double check
+mtcars$mpg %>% sd()
+```
+
+b. compute the sd of every numeric column in a mixed data frame 
+
+```{r}
+mtcars %>% dplyr::select_if(is.numeric) %>% map_dfc(sd)
+```
+
+c. compute the number of levels for every factor in a data frame 
+
+```{r}
+iris %>% select_if(is.factor) %>% map(levels)
+
+gss_cat %>% select_if(is.factor) %>% map(levels)
+```
+
+4. The following code simulates the performance of a t-test for non-normal data. Extract the p-value for each test, then visualize.
+
+```{r}
+trials <- map(1:100, ~ t.test(rpois(10, 10), rpois(7, 10)))
+
+trials %>% head()
+
+trials %>% map(pluck, 3) %>% flatten_dbl() %>% plot()
+```
+
+5. The following code uses a map nested inside another map to apply a function to every element of a nested list. Why does it fail, and what do you need to do to make it work?
+
+```{r}
+x <- list(
+    list(1, c(3, 9)),
+    list(c(3, 6), 7, c(4, 7, 6))
+)
+
+triple <- function(x) x * 3
+
+map_depth(x, .depth = 3, .f = triple)
+```
+
+6. Use map to fit linear models to the mtcars dataset using the formulas stored in this list 
+
+```{r}
+formulas <- list(
+    mpg ~ disp,
+    mpg ~ I(1 / disp),
+    mpg ~ disp + wt,
+    mpg ~ I(1 / disp) + wt
+)
+
+map(formulas, ~ lm(data = mtcars, formula = .x))
+```
+
+7. Fit the model mpg ~ disp to each of the bootstrapped replicates of mtcars in the list below, then extract the R^2 of the model fit
+
+```{r}
+bootstrap <- function(df) {
+    df[sample(nrow(df), replace = TRUE), , drop = FALSE]
+}
+
+bootstraps <- map(1:10, ~ bootstrap(mtcars))
+
+bootstraps %>%
+    map(., ~ lm(data = .x, formula = mpg ~ disp) %>% summary) %>%
+    map(pluck(8))
+```
+
+# 9.3 | Purrr Style 
+
+Let's take a look at how we can fit a model to each subgroup and extract a coefficient of the model. 
+
+```{r}
+# break the data down into groups defined by the number of cylinders
+by_cyl <- split(mtcars, mtcars$cyl)
+```
+
+This creates a list of three data frames, cars with 4, 6, and 8 cylinders.
+
+Imagine we wish to fit a linear model and extract the slope 
+
+```{r}
+by_cyl %>%
+    map( ~ lm(mpg ~ wt, data = .x)) %>%
+    map(coef) %>%
+    map_dbl(2)
+```
+
+# 9.4 | Map Variants 
+
+5 main ideas 
+
+- outputs same type as input with modify()
+- iterate over two inputs with map2()
+- iterate over an index with imap()
+- return nothing with walk 
+- iterate over any number of inputs with pmap 
+
+## 9.4.1 | Same type of output as input: modify()
+
+Suppose we wish to double every column in a data frame. We may first try map, but map returns a list 
+
+```{r}
+df <- data.frame(
+    x = 1:3,
+    y = 6:4
+)
+
+map(df, ~ .x * 2)
+```
+
+If we wish to keep the output as a data frame, we can use modify() which returns the same type of output as input.
+
+```{r}
+modify(df, ~ .x * 2)
+```
+
+Here is the basic implementation
+
+```{r}
+simple_modify <- function(x, f, ...) {
+    for (i in seq_along(x)) {
+        x[[i]] <- f(x[[i]], ...)
+    }
+    x
+}
+```
+
+## 9.4.2 | Two Inputs: map2 and friends 
+
+Imagine we have the following data : 
+
+```{r}
+xs <- map(1:8, ~ runif(10))
+
+xs[[1]][[1]] <- NA
+
+ws <- map(1:8, ~ rpois(10, 5) + 1)
+```
+
+We can use map_dbl to compute the unweighted means 
+
+```{r}
+map_dbl(xs, mean)
+
+# passing ws doesn't work because args after .f aren't transformed
+# map_dbl(xs, weighted.mean, ws)
+
+map2_dbl(xs, ws, weighted.mean)
+```
+
+The basic implementation
+
+```{r}
+simple_map2 <- function(x, y, f, ...) {
+    out <- vector("list", length(x))
+    for (i in seq_along(x)) {
+        out[[i]] <- f(x[[i]], y[[i]], ...)
+    }
+    out
+}
+```
+
+## 9.4.3 | No outputs: walk() and friends 
+
+The walk family of functions ignore the return values of .f and instead return the .x invisibly.
+
+```{r}
+names <- c("Laplace", "Markov", "Kolmogorov")
+
+welcome <- function(name) {
+    message <- glue::glue("Welcome, {name}\n")
+    print(message)
+}
+
+walk(names, welcome)
+```
+
+A very common side effect is saving something to disk.
+
+```{r}
+temp <- tempfile()
+dir.create(temp)
+
+cyls <- split(mtcars, mtcars$cyl)
+paths <- file.path(temp, paste0("cyl-", names(cyls), ".csv"))
+
+walk2(cyls, paths, write.csv)
+
+dir(temp)
+```
+
+## 9.4.4 | Iterating over Values and Indices 
+
+There are three ways to loop over a vector with a for loop: 
+
+- for (x in xs) : this is map 
+- for (i in seq_along(x)) : this is imap 
+- for (nm in names(xs)) : imap as well
+
+imap is like map2 in the sense that your .f gets called with two arguments, but here both are derived from the vector. imap(x, f) is equivalent to map2(x, names(x), f) if x has names, and map2(x, seq_along(x), f) if it does not.
+
+imap is often used for constructing labels 
+
+```{r}
+imap_chr(iris, ~ paste0("The first value of ", .y, " is ", .x[[1]]))
+```
+
+If the vector is unnamed, the second argument will be the index:
+
+```{r}
+x <- map(1:6, ~ sample(1000, 10))
+
+x
+
+imap_chr(x, ~ paste0("The highest value of ", .y, " is ", max(.x)))
+```
+
+imap is helpful if we want to work with the values in a vector along with their positions. 
+
+## 9.4.5 | Any number of inputs: pmap() and friends 
+
+In pmap() we supply it with a single list, which contains any number of arguments. 
+
+```{r}
+pmap_dbl(list(xs, ws), weighted.mean)
+```
+
+pmap gives us fine control over argument matching because we can name the components of the list. Returning to an earlier example with trim, we can instead have used pmap
+
+```{r}
+trims <- c(0, 0.1, 0.2, 0.5)
+x <- rcauchy(1000)
+
+pmap_dbl(list(trim = trims), mean, x = x)
+```
+
+It is often convenient to call pmap with a data frame. Thinking about the parameters to a function as a data frame is a powerful pattern. 
+
+Here is an example in which we draw random uniform numbers with varying patterns:
+
+```{r}
+params <- tibble::tribble(
+                      ~ n, ~ min, ~ max,
+                      1L, 0, 1,
+                      2L, 10, 100,
+                      3L, 100, 1000
+                  )
+
+pmap(params, runif)
+```
+
+In this case, the column names are crucial because they match the arguments to the function. 
+
+## 9.4.6 | Exercises 
+
+1. Explain the results of modify(mtcars, 1)
+
+```{r}
+# regular
+mtcars
+
+# modified
+modify(mtcars, 1)
+```
+
+modify(mtcars, 1) sets the values for rows 2:n() to the values for row 1. 
+
+2. Rewrite the following code to use iwalk() instead of iwalk2(). What are teh advantages and disadvantages?
+
+```{r}
+# original
+temp2 <- tempfile()
+dir.create(temp2)
+
+cyls <- split(mtcars, mtcars$cyl)
+
+paths <- file.path(temp2, paste0("cyl-", names(cyls), ".csv"))
+
+# answer 
+
+cyls %>% set_names(file.path(temp2, paste0("cyl-", names(.), ".csv"))) %>%
+    imap(write.csv)
+
+dir(temp2)
+```
+
+write.csv returns the name of the file and NULL.
+
+# 9.5 | Reduce Family 
+
+This is the other half of the mapreduce framework.
+
+## 9.5.1 | Basics 
+
+reduce() takes a vector of length n and produces a vector of length 1 by calling a function with a pair of values at a time: reduce(1:4, f) is equivalent to f(f(f(1, 2), 3), 4). 
+
+reduce() is a useful way to generalize a function that works with two inputs (a binary function) to work with any number of inputs. 
+
+Suppose we have a list of numeric vectors and we wish to find the values which occur in every element. 
+
+```{r}
+# generate sample data
+l <- map(1:4, ~ sample(1:10, 15, replace = T))
+
+str(l)
+```
+
+To solve this problem, we could use intersect repeatedly 
+
+```{r}
+out <- l[[1]]
+
+out %<>% intersect(l[[2]]) %>% intersect(l[[3]]) %>% intersect(l[[4]])
+```
+
+reduce automates this for us:
+
+```{r}
+reduce(l, intersect)
+```
+
+We could apply the same idea if we wanted to list all the elements that appear in at least one entry
+
+```{r}
+reduce(l, union)
+```
+
+Like the map family, we can also pass additional arguments. 
+
+The essence of reduce can be reduced to a simple wrapper around a for loop:
+
+```{r}
+simple_reduce <- function(x, f) {
+    out <- x[[1]]
+
+    for (i in seq(2, length(x))) {
+        out <- f(out, x[[i]])
+    }
+    out
+}
+
+simple_reduce(l, intersect)
+```
+
+## 9.5.2 | Accumulate 
+
+accumulate is a reduce variant that returns the intermediate steps as well as the end result:
+
+```{r}
+accumulate(l, intersect)
+```
+
+```{r}
+x <- c(4, 3, 10)
+
+reduce(x, `+`)
+
+accumulate(x, `+`)
+```
+
+## 9.5.3 | Output Types
+
+Without additional arguments, reduce returns the input when x is length 1
+
+```{r}
+reduce(1, `+`)
+```
+
+As a result, reduce has no way to check that the input is valid 
+
+```{r}
+reduce("a", `+`)
+```
+
+What if its length 0?
+
+```{r}
+reduce(integer(), `+`)
+```
+
+It asks for a .init value. If we call reduce(1, `+`, .init = 0), then we get 1 + init. 
+
+```{r}
+reduce(integer(), `+`, .init = 0)
+```
+
+If using reduce in a function, we should always apply .init. 
+
+## 9.5.4 | Multiple Inputs 
+
+Sometimes we need to pass two arguments to the function that we are reducing. This is a very specialized scenario. 
+
+```{r}
+# reduce2() takes a ternary function and a second vector that is
+# one element smaller than the first vector:
+paste2 <- function(x, y, sep = ".") paste(x, y, sep = sep)
+
+letters[1:4] %>% reduce(paste2)
+
+letters[1:4] %>% reduce2(c("-", ".", "-"), paste2)
+     
+
+x <- list(c(0, 1), c(2, 3), c(4, 5))
+
+y <- list(c(6, 7), c(8, 9))
+
+reduce2(x, y, paste)     
+```
+
+# 9.6 | Predicate Functionals 
+
+A predicate functional applies a predicate to each element of a vector. purrr provides six useful functions which come in 3 pairs: 
+
+- some(.x, .p) : returns TRUE is any element matches; every(.x, .p) returns true if all elements match 
+
+These are similar to any(map_lgl(.x, .p)) and all(map_lgl(.x, .p)) but they terminate early; some returns TRUE when it sees the first TRUE and every returns FALSE when it sees the first FALSE.
+
+- detect(.x, .p) returns the value of the first match; detect_index(.x, .p) returns the location of the first match. 
+
+- keep(.x, .p) keeps all matching elements; discard(.x, .p) drops all matching elements 
+
+
+```{r}
+# use functionals with a dataframe
+df <- data.frame(x = 1:3, y = c("a", "b", "c"))
+
+detect(df, is.factor)
+
+detect_index(df, is.factor)
+
+str(keep(df, is.factor))
+
+str(discard(df, is.factor))
+```
+
+## 9.6.2 | Map Variants 
+
+map and modify come in variants that also take predicate functions, transforming only the elements of .x where .p is true. 
+
+```{r}
+df <- data.frame(
+    num1 = c(0, 10, 20),
+    num2 = c(5, 6, 7),
+    chr1 = c("a", "b", "c"),
+    stringsAsFactors = FALSE
+)
+
+str(map_if(df, is.numeric, mean))
+
+str(modify_if(df, is.numeric, mean))
+
+str(map(keep(df, is.numeric), mean))
+```
+
+## 9.6.3 | Exercises 
+
+1. Why isn't is.na() a predicate function? 
+
+Its result is as long as the input, whereas in a true predicate we would have a return value of length 1.
+
+
+2. simple_reduce() has a problem when x is length 0 or length 1. Describe the source of the problem and how you might go about fixing it.
+
+```{r}
+simple_reduce <- function(x, f) {
+    out <- x[[1]]
+
+    for (i in seq(2, length(x))) {
+        out <- f(out, x[[i]])
+    }
+    out
+}
+
+simple_reduce(integer(), `+`)
+
+simple_reduce <- function(x, f) {
+
+    if (length(x) == 0 || length(x) == 1) {
+        x
+    } else {
+    
+        out <- x[[1]]
+    
+        for (i in seq(2, length(x))) {
+            out <- f(out, x[[i]])
+        }
+        out
+        } 
+}
+```
+
+3. Implement the span() function from Haskell: 
+
+given a list x and a predicate function f, span(x, f) returns the location of the longest sequential run of elements where the predicate is true. (Hint: we may find rle() helpful.)
+
+Not my solution 
+
+```{r}
+span_r <- function(x, f) {
+    idx <- unname(map_lgl(x, ~ f(.x)))
+    rle <- rle(idx)
+
+    # check that predicate is never true
+    if (!any(rle$values)) {
+        return(integer())
+    }
+
+    # find length of longest run of TRUEs
+    longest <- max(rle$lengths[rle$values])
+
+    # find position of first longest run
+    longest_idx <- which(rle$values & rle$lengths == longest)[1]
+
+    # add up all lengths before the longest run
+    out_start <- sum(rle$lengths[seq_len(longest_idx - 1)]) + 1L
+    out_end <- out_start + rle$lengths[[longest_idx]] - 1L
+    out_start:out_end 
+}
+
+span_r(iris, is.numeric)
+
+span_r(iris, is.factor)
+
+span_r(iris, is.character)
+```
+
+4. Implement arg_max(). It should take a function and a vector of inputs and return the elements of the input where the function returns the highest value. 
+
+```{r}
+x
+
+x %>% map(., ~ .x^2) %>% which.max
+
+arg_max_r <- function(x, f) {
+    out_index <- x %>% map(., ~ f(.x)) %>% which.max()
+    x[[out_index]]
+}
+
+arg_m_r <- function(x, f, p = c("max", "min")) {
+    if (p == "max"){
+        p = which.max
+    } else if (p == "min"){
+        p = which.min
+    } else {
+        print("No p selected in min / max")
+    }
+    
+    out_index <- x %>% map(., ~ f(.x)) %>% p
+    x[[out_index]]
+}
+
+arg_m_r(-10:5, function(x) x^2, p = "max")
+arg_m_r(-5:5, function(x) x^2, p = "max")
+
+arg_m_r(-10:5, function(x) x^2, p = "min")
+arg_m_r(-5:5, function(x) x^2, p = "min")
+```
+
+5. The function below scales a vector so that it falls in the range [0, 1]. How would you apply it to every column of a data frame? How would you apply it to every numeric column in a data frame? 
+
+```{r}
+scale01 <- function(x) {
+    rng <- range(x, na.rm = TRUE)
+    (x - rng[1]) / (rng[2] - rng[1])
+}
+
+mtcars %>% modify(scale01)
+mtcars %>% modify_if(is.numeric, scale01)
+
+```
+
+Challenge: Read about the fixed point algorithm and implement 
+
+### Initial
+
+```{r}
+fixed_point <- function(func, initial_guess, tolerance = 1e-5, num_digits = 2) {
+
+    close_enough <- function(v1, v2) {
+        if (abs(v1 - v2) < tolerance) {
+            return(TRUE)
+        }
+        return(FALSE)
+    }
+
+    try_guess <- function(guess) {
+        next_guess <- func(guess)
+
+        if (close_enough(guess, next_guess)) {
+            return(round(next_guess, num_digits))
+        } else {
+            try_guess(next_guess)
+        }
+    }
+
+    try_guess(initial_guess)
+}
+```
+
+### Try it out 
+
+```{r}
+fixed_point(cos, 1)
+cos(0.74)
+
+fixed_point(function(y) {sin(y) + cos(y)}, 1)
+(sin(1.26) + cos(1.26))
+```
+
+### Fixed point sqrt
+
+```{r}
+# does not converge
+sqrt_fp <- function(x) {
+    fixed_point(function(y) x / y, 1.0)
+}
+
+# average damping
+sqrt_fp <- function(x, ...) {
+    fixed_point(function(y) {mean(c(y, (x / y)))}, 1.0, ...)
+}
+
+sqrt_fp(15.9999, num_digits = 5)
+```
+
+Show that the golden ratio phi is a fixed point of the transformation $x \to 1 + 1/x$ and use this fact to compute phi by means of the fixed point procedure. 
+
+f(x) = 1 + 1/x
+
+```{r}
+fixed_point(function(x) {1 + (1/x)}, 1.5, num_digits = 5)
+```
+
+Modify fixed point so that it prints the sequence of approximations it generates. Then find a solution to x^x = 1000 by finding a fixed point of x \to log(1000)/log(x). Compare the number of steps this takes with and without average damping. Note that you cannot start fixed point with a guess of 1, as this would cause division by 0. 
+
+```{r}    
+fixed_point <- function(func, initial_guess, tolerance = 1e-5, num_digits = 2) {
+
+    guess_vector <- c()
+    
+    close_enough <- function(v1, v2) {
+        if (abs(v1 - v2) < tolerance) {
+            return(TRUE)
+        }
+        return(FALSE)
+    }
+
+    try_guess <- function(guess) {
+        next_guess <- func(guess)
+
+        if (close_enough(guess, next_guess)) {
+            (guess_vector <<- append(guess_vector, next_guess))
+        } else {
+            guess_vector <<- append(guess_vector, next_guess) 
+            try_guess(next_guess)
+        }
+    }
+
+    try_guess(initial_guess)
+}
+
+fixed_point(cos, 1.0)
+
+# without average damping 
+fixed_point(function(x) log(1000) / log(x), 2.0)
+```
+
+Infinite continued fractions
+
+```{r}
+cont_frac <- function(n, d, k) {
+    frac <- 1
+    if (k == 1){
+        return(frac)
+    } else {
+        frac <- (n / (d + cont_frac(n, d, (k-1))))
+    }
+}
+
+# converge to 1 / phi 
+cont_frac(1, 1, 10) %>% as.double()
+
+# check
+phi <- 1.61803398875
+
+goal <- 1 / phi
+
+# create iterator
+check_phi <- function(initial_k, precision = 5) {
+    counter <- initial_k
+    current <- cont_frac(1, 1, counter) %>% as.double()
+
+    if (round(current, precision) == round(goal, precision)) {
+        return(counter)
+    } else {
+        counter <- counter + 1
+        check_phi(counter)
+    }
+}
+
+check_phi(1)
+
+cont_frac(1, 1, 12) %>% as.double() %>% round(5) == goal %>% round(5)
+```
+
+In 1737, Euler released a memoir in which he included a continued fraction expansion for e - 2, where e is the base of the natural log. In this frac, the N are all 1, and the D are successively 1,2,1,1,4,1,1,6,1,1,8,...
+
+Write a program to approximate e based on Euler's expansion
+
+```{r}
+cont_frac
+
+euler_e <- function(k) {
+    cont_frac_e <- function(n, d, k) {
+        frac <- 1
+        initial_d <- -1
+
+        if (k == 1){
+            return(frac)
+        } else {
+            if (d %% 3 == 2){
+                d <- initial_d + 2
+                initial_d <- initial_d + 2
+            } else {
+                d <- 1
+            }
+            frac <- (n / (d + cont_frac_e(n, d, (k-1))))
+        }
+    }
+
+    return(2 + cont_frac_e(1,1, k))
+}
+
+euler_e <- function(d, k){
+    initial_d <- -1
+    d <- d
+    
+    if (d %% 3 == 2){
+        d <- initial_d + 2
+        initial_d <- initial_d + 2
+        euler_e(d, (k-1))
+    } else {
+        d <- 1
+        cont_frac(1, d, k)
+    }
+}
+
+euler_e(5, 100) %>% as.double()
+
+```
+
+A continued fraction representation of the tangent function was published in 1770 by Lambert. Define a procedure (tan-cf x k) that computes an approximation to the tangent function based on Lambert's formula. 
+
+```{r}
+tan_cf <- function(x, k) {
+    while (i < k){
+        if (k == 1){
+            return(x / overall)
+        } else {
+            i <- i + 1
+            overall <- x / cont_frac(x^2, (d + 2), (i))
+        }
+    }}
+
+tan(1)
+```

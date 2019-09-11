@@ -1,0 +1,150 @@
+# Rewriting R code in C++
+
+```{r}
+library(Rcpp)
+```
+
+Typical bottlenecks that C++ can address include:
+
+- Loops that can't be easily vectorized because subsequent iterations depend on previous ones 
+- Recursive functions, or problems which involve calling functions millions of times. The overhead of calling a function is much lower in C++ than in R
+- Problems that require advanced data structures and algorithms that R doesn't provide. 
+
+The focus here is on reducing bottlenecks in R code, and creating small self contained functions. 
+
+# Outline 
+
+- 25.2 | teaches how to write some C++ 
+- 25.3 | Modify attributes from C++ 
+- 25.4 | Work with R's missing values in C++
+- 25.5 | Use data structures from the standard template library, or STL, built into C++
+- 25.6 | Two case studies 
+- 25.7 | Add C++ code to a package 
+- 25.8 | more resources 
+
+
+# 25.2 | Getting Started 
+
+```{r}
+cppFunction('int add(int x, int y, int z) {
+int sum = x + y + z;
+return sum;
+}')
+
+add
+
+add(1, 2, 3)
+```
+
+When ran, Rcpp will compile the C++ code and construct an R function that connects to the compiled C++ function. 
+
+## 25.2.1 | No inputs, Scalar Output 
+
+```{r}
+# a very simple function
+one <- function() 1L
+
+cppFunction('int one() {
+return 1;
+}')
+
+one()
+```
+
+
+## 25.2.2 | Scalar Input, Scalar Output
+
+```{r}
+signR <- function(x) {
+    if (x > 0) {
+        1
+    } else if (x == 0) {
+        0
+    } else {
+        -1
+    }
+}
+
+cppFunction('int signC(int x) {
+if (x > 0) {
+return 1;
+} else if (x == 0) {
+return 0;
+} else {
+return -1;
+}
+}')
+
+signC(-0)
+
+# the cost of loops is much lower in C++
+sumR <- function(x) {
+    total <- 0
+    for (i in seq_along(x)) {
+        total <- total + x[i]
+    }
+    total
+}
+
+cppFunction('double sumC(NumericVector x) {
+    int n = x.size();
+    double total = 0;
+    for (int i = 0; i < n; ++i) {
+        total += x[i];
+    }
+    return total;
+}')
+
+x <- runif(1e3)
+
+bench::mark(
+           sum(x),
+           sumC(x),
+           sumR(x)
+)[1:6]
+```
+
+## 25.2.4 | Vector Input, Vector Output 
+
+```{r}
+# create a function that computes Euclidean distance between a value and a vector of values
+pdistR <- function(x, ys) {
+    sqrt((x - ys) ^ 2)
+}
+
+cppFunction('NumericVector pdistC(double x, NumericVector ys) {
+    int n = ys.size();
+    NumericVector out(n);
+
+    for (int i = 0; i < n; ++i) {
+        out[i] = sqrt(pow(ys[i] - x, 2.0));
+    }
+    return out;
+}')
+
+# because the R version is fully vectorized, it will already be fast
+y <- runif(1e6)
+
+bench::mark(
+           pdistR(0.5, y),
+           pdistC(0.5, y)
+)[1:6]
+```
+
+## 25.2.5 | Using sourceCpp
+
+you can read in Cpp source code with sourceCpp("path/to/file.cpp"). 
+
+## 25.2.6 | Exercises 
+
+```{r}
+cppFunction('double f1(NumericVector x) {
+    int n = x.size();
+    double y = 0;
+
+    for (int i = 0; i < n; ++i) {
+        y += x[i] / n;
+    }
+    return y;
+}')
+```

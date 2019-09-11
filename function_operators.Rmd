@@ -1,0 +1,558 @@
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(purrr)
+library(memoise)
+library(microbenchmark)
+```
+
+Function operators are functions that take one or more functions as input and return a function as output. 
+
+Here is a function which wraps a function and makes a new function that prints out its first argument
+
+```{r}
+chatty <- function(f) {
+    force(f)
+
+    function(x, ...) {
+        res <- f(x, ...)
+        cat("Processing ", x, "\n", sep = "")
+        res
+    }
+}
+
+f <- function(x) x^2
+
+s <- c(3, 2, 1)
+
+map_dbl(s, chatty(f))
+```
+
+Function operators are closely related to function factories ; they are function factories that take a function as input. 
+
+# 11.2 | Existing Function Operators
+ 
+There are two operators which will help solve common recurring problems. these are purrr::safely and memoise
+
+## 11.2.1 | Capturing Errors with Safely
+
+One advantage of for loops is that if an interation fails, we still have the results up to the failure.
+
+```{r}
+x <- list(runif(10), rnorm(10), rpois(10, 3), "oops")
+
+out <- rep(NA_real_, length(x))
+
+for (i in seq_along(x)) {
+    out[[i]] <- sum(x[[i]])
+}
+
+out
+```
+
+If we do the same with a functional, we get no output making it hard to see where the problem lies.
+
+```{r}
+map_dbl(x, sum)
+```
+
+safely helps with this. It is a function operator that transforms a function to turn errors into data. 
+
+```{r}
+safe_sum <- safely(sum)
+
+safe_sum
+```
+
+A function transformed by safely always returns a list with two elements, result and error. 
+
+```{r}
+# use safely with a functional
+out <- map(x, safely(sum))
+
+str(out)
+```
+
+This output is inconvenient. We can make it easier by turning it inside out with transpose, so that we get a list of results and errors 
+
+```{r}
+out <- transpose(map(x, safely(sum)))
+
+str(out)
+```
+
+Now we can find the results that worked or the inputs that failed
+
+```{r}
+ok <- map_lgl(out$error, is.null)
+```
+
+As an example, suppose we wish to fit a GLM to a list of data frames. GLMs can sometimes fail because of optimization problems, but we still wish to be able to try to fit all the models and look back at which models failed
+
+```{r}
+fit_model <- function(df) {
+    glm(y ~ x1 + x2 * x3, data = df)
+}
+
+
+models <- transpose(map(datasets, safely(fit_model)))
+ok <- map_lgl(models$error, is.null)
+
+# which data failed to converge?
+datasets[!ok]
+
+# which models were successful?
+datasets[ok]
+```
+
+purrr comes with three other function operators in the same vein:
+
+- possibly() returns a default value when there is an error. It provides no way to tell if an error occured or not, so its best reserved for cases when theres some obvious sentinel value like NA
+- quietly() turns output, messages, and warning side-effects into output, message, and warning components of the output 
+- auto_browser() executes browser() inside the function when there is an error
+
+## 11.2.2 | Caching Components with Memoise
+
+Memoization allows a function to remember previous inputs and return cached results. This is an example of the classic CS tradeoff between memory vs speed. 
+
+```{r}
+# toy example of an expensive operation
+slow_function <- function(x) {
+    Sys.sleep(1)
+    x * 10 * runif(1)
+}
+
+system.time(print(slow_function(1)))
+```
+
+When we memoise this function, its slow when we call it with new arguments but when we call it with args it has seen before, its instantaneous
+
+```{r}
+fast_function <- memoise::memoise(slow_function)
+
+system.time(print(fast_function(1)))
+
+system.time(print(fast_function(1)))
+```
+
+Another example is the fibonacci series:
+
+```{r}
+fib <- function(n) {
+    if (n < 2) return(1)
+    fib(n - 2) + fib(n - 1)
+}
+
+system.time(fib(33))
+system.time(fib(34))
+```
+
+```{r}
+fib2 <- memoise(function(n) {
+    if (n < 2) return(1)
+    fib(n - 2) + fib(n - 1)
+})
+
+system.time(fib2(33))
+system.time(fib2(34))
+```
+
+Think carefully before using memoization. If a function is not pure, we will get misleading and confusing results.
+
+## 11.2.3 | Exercises 
+
+1. Base R provides a function operator in the form of Vectorize(). What does it do? When might you use it? 
+
+Vectorize creates a function wrapper that vectorizes the action of its argument FUN. 
+
+Example:
+
+```{r}
+# We use rep.int as rep is primitive
+vrep <- Vectorize(rep.int)
+vrep(1:4, 4:1)
+vrep(times = 1:4, x = 4:1)
+
+vrep <- Vectorize(rep.int, "times")
+vrep(times = 1:4, x = 42)
+
+f <- function(x = 1:3, y) c(x, y)
+vf <- Vectorize(f, SIMPLIFY = FALSE)
+f(1:3, 1:3)
+vf(1:3, 1:3)
+vf(y = 1:3) # Only vectorizes y, not x
+
+# Nonlinear regression contour plot, based on nls() example
+require(graphics)
+SS <- function(Vm, K, resp, conc) {
+    pred <- (Vm * conc)/(K + conc)
+    sum((resp - pred)^2 / pred)
+}
+
+vSS <- Vectorize(SS, c("Vm", "K"))
+Treated <- subset(Puromycin, state == "treated")
+
+Vm <- seq(140, 310, length.out = 50)
+K <- seq(0, 0.15, length.out = 40)
+SSvals <- outer(Vm, K, vSS, Treated$rate, Treated$conc)
+contour(Vm, K, SSvals, levels = (1:10)^2, xlab = "Vm", ylab = "K")
+
+# combn() has an argument named FUN
+combnV <- Vectorize(function(x, m, FUNV = NULL) combn(x, m, FUN = FUNV),
+vectorize.args = c("x", "m"))
+combnV(4, 1:4)
+combnV(4, 1:4, sum)
+```
+
+```{r}
+v_sum <- Vectorize(summary)
+
+mt_mpg <- lm(data = mtcars, formula = mpg ~ wt)
+
+vec_mt_mpg <- v_sum(mt_mpg)
+
+vec_mt_mpg$residuals
+
+mt_mpg$residuals
+```
+
+2. Read the source code for possibly(). How does it work?
+
+```{r}
+possibly
+
+possibly_commented <- function (.f, otherwise, quiet = TRUE) 
+{
+    # grab function to use as mapper
+    .f <- as_mapper(.f)
+    # force update of otherwise variable
+    force(otherwise)
+    # return function with optional params
+    function(...) {
+        # if there is as error and not quiet, return a message
+        tryCatch(.f(...), error = function(e) {
+            if (!quiet) 
+                message("Error: ", e$message)
+            # else do the otherwise option
+            otherwise
+        },
+        # if the user interrupts, stop running and send message 
+        interrupt = function(e) {
+            stop("Terminated by user", call. = FALSE)
+        })
+    }
+}
+```
+
+3. Read the source code for safely(). How does it work?
+
+```{r}
+safely
+
+safely_commented <- function (.f, otherwise = NULL, quiet = TRUE) 
+{
+    # treat f as a mapper 
+    .f <- as_mapper(.f)
+    # return function to capture errors
+    function(...) capture_error(.f(...), otherwise, quiet)
+}
+
+purrr:::capture_error
+
+# this essentially looks like possibly 
+capture_error_commented <- function (code, otherwise = NULL, quiet = TRUE) 
+{
+    tryCatch(list(result = code, error = NULL), error = function(e) {
+        if (!quiet) 
+            message("Error: ", e$message)
+        list(result = otherwise, error = e)
+    }, interrupt = function(e) {
+        stop("Terminated by user", call. = FALSE)
+    })
+}
+```
+
+# 11.3 | Case Study : Creating Your Own Function Operators 
+
+In this case study we create our own simple function operators. 
+
+Suppose we have a vector of URLs and we would like to download each one to disk. This is simple enough with walk2() and file.download()
+
+```{r}
+urls <- c(
+    "adv-r" = "https://adv-r.hadley.nz",
+    "r4ds" = "http://r4ds.had.co.nz"
+)
+
+path <- paste(tempdir(), names(urls), ".html")
+
+walk2(urls, path, download.file, quiet = TRUE)
+```
+
+This is fine for a few urls, but as we add more we want more features:
+
+- Add a small delay between each request to avoid hammering the server 
+- Display a . every few URLs so we know its still working 
+
+```{r}
+# with a for loop
+for (i in seq_along(urls)) {
+    Sys.sleep(0.1)
+    if (i %% 10 == 0) cat(".")
+    download.file(urls[[i]], path[[i]])
+}
+```
+
+This code is suboptimal because it interleaves different concerns: pausing, showing progress, and downloading. This makes it harder to read and reuse the components in new situations. 
+
+Let's see if we can use function operators to extract out pausing and progress to make them more usable. 
+
+```{r}
+# functional for delay | f is function, amount is delay amount
+delay_by <- function(f, amount) {
+    force(f)
+    force(amount)
+
+    function(...) {
+        Sys.sleep(amount)
+        f(...)
+    }
+}
+
+
+system.time(runif(100))
+system.time(delay_by(runif, 1.0)(100))
+```
+
+and we can use it with the original walk2()
+
+```{r}
+walk2(urls, path, delay_by(download.file, 0.1), quiet = FALSE)
+```
+
+Creating a function to display the occasional dot is a little harder, since we no longer have the index from the loop. We could pass along the index, but that breaks encapsulation. Instead we can use another function factory trick so that the progress wrapper can manage its own internal counter.
+
+```{r}
+dot_every <- function(f, n) {
+
+    force(f)
+    force(n)
+    i <- 0
+    
+    function(...) {
+        i <<- i + 1
+        if (i %% n == 0) cat(".")
+        f(...)
+    }
+}
+
+dot_every(runif, 1)
+
+walk(100, runif)
+walk(1:100, ~ dot_every(runif, 10)(.x))
+```
+
+Now we can express the original for loop as 
+
+```{r}
+walk2(
+    urls, path,
+    dot_every(delay_by(download.file, 0.1), 1),
+    quiet = FALSE
+)
+```
+
+This looks a little hard to read because of the composition of functions. Here it is again with pipes 
+
+```{r}
+walk2(
+    urls, path,
+    download.file %>% delay_by(1) %>% dot_every(1),
+    quiet = TRUE
+)
+```
+
+## 11.3.1 | Exercises 
+
+1. Weigh the pros and cons 
+
+```{r}
+# order 1
+walk2(
+    urls, path,
+    download.file %>% delay_by(1) %>% dot_every(1),
+    quiet = TRUE
+) %>% microbenchmark(times = 10)
+
+# order 2
+walk2(
+    urls, path,
+    download.file  %>% dot_every(1) %>% delay_by(1),
+    quiet = TRUE
+) %>% microbenchmark(times = 10)
+```
+
+They seem to be the same. 
+
+2. You shouldn't memoise file.download because there are side effects in the function which don't handle memoisation well
+
+3. Create a function operator that reports whenever a file is created or deleted in the working directory, using dir() and setdiff(). What other global function effects might you want to track? 
+
+```{r}
+track_changes <- function(f, ...) {
+    force(f)
+    
+    contents <- dir()
+
+    new_content <- dir()
+    
+    function(...) {
+        # call function
+        f(...)
+
+        # recheck directory
+        new_content <<- dir()
+    }
+    
+    if (length(contents) == length(new_content)) {
+        cat("There has been no change in your directory!\n")
+        print("---Old Content---")
+        print(contents)
+        print("---New Content---")
+        print(new_content)
+    } else {
+        cat("There has been a change in your directory!\n")
+        print("---Old Content---")
+        print(contents)
+        print("---New Content---")
+        print(new_content)
+    }
+}
+
+files_to_add_list <- c(
+    "new1.txt",
+    "new2.txt",
+    "new3.txt",
+    "new4.txt",
+    "new5.txt"
+)
+
+# add files
+files_to_add_list %>% walk(., ~ track_changes(file.create(.x)))
+
+# remove files
+files_to_add_list %>% walk(., ~ file.remove(.x) %>% track_changes)
+
+# do nothing with files
+files_to_add_list %>% map(., ~ print(.x) %>% track_changes) 
+```
+
+Someone else's answer:
+
+```{r}
+# create a function that finds the difference between two vectors of files
+dir_compare <- function(old, new) {
+    if (setequal(old, new)) {
+        return()
+    }
+
+    added <- setdiff(new, old)
+    removed <- setdiff(old, new)
+
+    changes <- c(
+        if (length(added) > 0) paste0(" * '", added, "' was added"),
+        if (length(removed) > 0) paste0(" * '", removed, "' was removed")
+    )
+
+    message(paste(changes, collapse = "\n"))
+}
+
+dir_compare(c("x", "y"), c("x", "y"))
+dir_compare(c("x", "y"), c("x", "a"))
+
+# wrap it in a function operator
+track_dir <- function(f) {
+    force(f)
+
+    function(...) {
+        dir_old <- dir()
+        on.exit(dir_compare(dir_old, dir()), add = TRUE)
+        f(...)
+    }
+}
+
+# add files
+files_to_add_list %>% map(., ~ track_dir(file.create(.x)))
+
+# remove files
+files_to_add_list %>% walk(., ~ file.remove(.x) %>% track_dir())
+
+# do nothing with files
+files_to_add_list %>% map(., ~ print(.x) %>% track_dir()) 
+```
+
+4. Write a function operator that logs a timestamp and message to a file every time a function is run.
+
+```{r}
+append_line <- function(path, ...) {
+    cat(..., "\n", sep = "", file = path, append = TRUE)
+}
+
+logger <- function(f, log_path) {
+    force(f)
+    force(log_path)
+
+    append_line(log_path, "created at: ", as.character(Sys.time()))
+
+    function(...) {
+        append_line(log_path, "called at: ", as.character(Sys.time()))
+        f(...)
+    }
+}
+
+log_path <- tempfile()
+mean2 <- logger(mean, log_path)
+
+mean2(1:4)
+
+
+readLines(log_path)
+```
+
+5. Modify delay_by() so that instead of delaying by a fixed amount of time, it ensures that a certain amount of time has elapsed since the function was last called. That is, if you called 
+
+```{r}
+g <- delay_by(1, f)
+g()
+Sys.sleep(2)
+g()
+```
+
+there shouldn't be an extra delay. 
+
+```{r}
+delay_atleast <- function(f, amount) {
+    force(f)
+    force(amount)
+
+    # store the last time the function was ran
+    last_time <- NULL
+
+    function(...) {
+        if (!is.null(last_runtime)) {
+            wait <- (last_time - Sys.time()) + amount
+            if (wait > 0) {
+                Sys.sleep(wait)
+            }
+        }
+    }
+
+    # update the time after the function has finished
+    on.exit(last_time <<- Sys.time())
+
+    f(...)
+}
+
+
+```
